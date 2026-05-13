@@ -1,44 +1,76 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
-    tags: ['v*']
-
-permissions:
-  contents: write
+    tags:
+      - "v*"
 
 jobs:
-  build-macos:
-    runs-on: macos-latest
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ""
+          - platform: macos-latest
+            args: "--target aarch64-apple-darwin"
+          - platform: macos-15
+            args: "--target x86_64-apple-darwin"
+    runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: lts/*
+          cache: npm
 
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || matrix.platform == 'macos-15' && 'x86_64-apple-darwin' || '' }}
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
-      - uses: tauri-apps/tauri-action@v0
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and Release
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'KeyFarm ${{ github.ref_name }}'
+          tagName: "v__VERSION__"
+          releaseName: "KeyFarm v__VERSION__"
           releaseBody: |
-            ## Download
+            ## 下载安装
 
-            **macOS** (Apple Silicon + Intel) — download the `.dmg` file below.
+            | 平台 | 格式 |
+            |------|------|
+            | Windows | `.exe` 安装包 |
+            | macOS (Apple Silicon) | `.dmg` 磁盘映像 |
+            | macOS (Intel) | `.dmg` 磁盘映像 |
 
-            > First launch: right-click the app → "Open" to bypass Gatekeeper.
-          releaseDraft: true
-          args: '--target universal-apple-darwin'
+            > - Windows 首次安装可能触发 SmartScreen 提示，点击"仍要运行"继续
+            > - macOS 首次打开需右键点击应用 → "打开"以绕过 Gatekeeper
+
+            ## 功能亮点
+
+            🌾 键盘即农场，每次按键都在种植作物
+            🎮 100 种作物收集，4 个稀有度等级
+            🌐 中英文双语支持
+            🖥️ 多视图模式：农场 / 平面 / 热力图
+
+            ## 变更日志
+
+            详见 [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}

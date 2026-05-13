@@ -34,6 +34,7 @@ sign-and-build.sh
 .kiro/
 .trae/
 .windsurf/
+.trellis
 skills-lock.json
 
 # Promo / Remotion

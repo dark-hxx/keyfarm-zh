@@ -136,11 +136,12 @@ interface FarmCanvasProps {
   onWaterToFish: (keyCode: string) => void;
   onDogScared: (dogId: string, fleeCol: number, fleeRow: number) => void;
   onDragStart?: () => void;
-  viewMode: 'farm' | 'heatmap';
-  flipX: boolean;
+  viewMode: 'farm' | 'heatmap' | 'flat';
+  rotation: number;
+  locked?: boolean;
 }
 
-export function FarmCanvas({ gameState, animations, onHarvest, onRemovePest, onFertilize, onDuckEaten, onDuckAttacked, onWaterToFish, onDogScared, onDragStart, viewMode, flipX }: FarmCanvasProps) {
+export function FarmCanvas({ gameState, animations, onHarvest, onRemovePest, onFertilize, onDuckEaten, onDuckAttacked, onWaterToFish, onDogScared, onDragStart, viewMode, rotation, locked }: FarmCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const cellBlocksRef = useRef<Map<string, IsoBlock>>(new Map());
@@ -218,6 +219,164 @@ export function FarmCanvas({ gameState, animations, onHarvest, onRemovePest, onF
         });
       });
 
+      if (hasActiveAnimations) {
+        rafRef.current = requestAnimationFrame(draw);
+      }
+      return;
+    }
+
+    // ── Flat (2D top-down) view ──
+    if (viewMode === 'flat') {
+      const keyUnit = TILE_W * 0.7; // width of a 1u key
+      const keyH = TILE_H * 1.4;    // height of each key row
+      const gap = 2;
+      const flatPadding = PADDING;
+      const totalCols = HHKB_ROWS.reduce((max, row) => {
+        const rowCols = row.reduce((sum, k) => sum + k.width, 0);
+        return Math.max(max, rowCols);
+      }, 0);
+      const flatOffsetX = (canvasWidth - totalCols * keyUnit) / 2;
+      const flatOffsetY = (canvasHeight - HHKB_ROWS.length * (keyH + gap)) / 2;
+
+      HHKB_ROWS.forEach((row, rowIdx) => {
+        let colOffset = 0;
+        row.forEach((keyDef) => {
+          const cell = gameStateRef.current.cells[keyDef.keyCode];
+          const stage = cell?.stage || 'empty';
+
+          let color = STAGE_COLORS[stage];
+          if (stage === 'fruit' && cell?.cropId) {
+            if (cell.isGolden) {
+              color = '#FFD700';
+            } else {
+              const crop = CROP_MAP[cell.cropId];
+              if (crop) color = RARITY_BLOCK_COLORS[crop.rarity];
+            }
+          }
+
+          const x = flatOffsetX + colOffset * keyUnit;
+          const y = flatOffsetY + rowIdx * (keyH + gap);
+          const w = keyDef.width * keyUnit - gap;
+          const h = keyH;
+
+          // Create a fake IsoBlock for hit testing (using the rectangular corners)
+          const topPoly = [
+            { x, y },
+            { x: x + w, y },
+            { x: x + w, y: y + h },
+            { x, y: y + h },
+          ];
+          const fakeBlock: IsoBlock = { top: topPoly, right: [], front: [] };
+          cellBlocksRef.current.set(keyDef.keyCode, fakeBlock);
+
+          // Animation
+          const hitTime = animations.recentHits.get(keyDef.keyCode);
+          const hitAge = hitTime ? now - hitTime : Infinity;
+          const isHitFlashing = hitAge < HIT_FLASH_DURATION;
+          if (isHitFlashing) hasActiveAnimations = true;
+          if (hitTime && hitAge > HIT_FLASH_DURATION) {
+            animations.recentHits.delete(keyDef.keyCode);
+          }
+
+          const harvestTime = animations.recentHarvests.get(keyDef.keyCode);
+          const harvestAge = harvestTime ? now - harvestTime : Infinity;
+          const isHarvestSparkle = harvestAge < HARVEST_DURATION;
+          if (isHarvestSparkle) hasActiveAnimations = true;
+          if (harvestTime && harvestAge > HARVEST_DURATION) {
+            animations.recentHarvests.delete(keyDef.keyCode);
+            animations.harvestFruits.delete(keyDef.keyCode);
+            animations.harvestGolden.delete(keyDef.keyCode);
+          }
+
+          // Draw key background
+          ctx.save();
+          if (isHitFlashing) {
+            const flash = 1 - hitAge / HIT_FLASH_DURATION;
+            const scale = 1 + flash * 0.08;
+            ctx.translate(x + w / 2, y + h / 2);
+            ctx.scale(scale, scale);
+            ctx.translate(-(x + w / 2), -(y + h / 2));
+          }
+
+          // Rounded rect
+          const radius = 4;
+          ctx.beginPath();
+          ctx.roundRect(x, y, w, h, radius);
+          ctx.fillStyle = color;
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+
+          // Golden glow
+          if (cell?.isGolden && stage === 'fruit') {
+            ctx.shadowColor = '#FFD700';
+            ctx.shadowBlur = 8;
+            ctx.beginPath();
+            ctx.roundRect(x, y, w, h, radius);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+          }
+
+          // Pest indicator
+          if (cell?.hasPest && ['watering', 'sprout', 'tree', 'fruit'].includes(stage)) {
+            hasActiveAnimations = true;
+            const bugBounce = Math.sin(now / 200) * 2;
+            ctx.font = `${Math.round(h * 0.4)}px serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('🐛', x + w / 2, y + h / 2 + bugBounce);
+          }
+
+          // Emoji for stage
+          if (!cell?.hasPest && stage !== 'empty' && stage !== 'fallow' && stage !== 'overworked') {
+            let emoji = '';
+            if (stage === 'fruit' && cell?.cropId) {
+              const crop = CROP_MAP[cell.cropId];
+              if (crop) emoji = crop.emoji;
+            } else if (stage === 'watering') emoji = '💧';
+            else if (stage === 'sprout') emoji = '🌱';
+            else if (stage === 'tree') emoji = '🌳';
+
+            if (emoji) {
+              ctx.font = `${Math.round(h * 0.45)}px serif`;
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.fillText(emoji, x + w / 2, y + h / 2 - 2);
+            }
+          }
+
+          // Key label
+          if (keyDef.label && !keyDef.keyCode.startsWith('_gap')) {
+            ctx.font = `bold ${Math.round(h * 0.22)}px system-ui, monospace`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'bottom';
+            ctx.fillStyle = 'rgba(255,255,255,0.5)';
+            ctx.fillText(keyDef.label, x + w / 2, y + h - 3);
+          }
+
+          ctx.restore();
+
+          // Harvest sparkle animation
+          if (isHarvestSparkle && harvestTime) {
+            const progress = harvestAge / HARVEST_DURATION;
+            const cropId = animations.harvestFruits.get(keyDef.keyCode) || 'apple';
+            const crop = CROP_MAP[cropId];
+            if (crop) {
+              ctx.save();
+              ctx.globalAlpha = 1 - progress;
+              ctx.font = `${Math.round(h * 0.5)}px serif`;
+              ctx.textAlign = 'center';
+              ctx.fillText(crop.emoji, x + w / 2, y + h / 2 - progress * 30);
+              ctx.restore();
+            }
+          }
+
+          colOffset += keyDef.width;
+        });
+      });
+
+      hasActiveAnimations = true; // Keep alive for animations
       if (hasActiveAnimations) {
         rafRef.current = requestAnimationFrame(draw);
       }
@@ -394,9 +553,9 @@ export function FarmCanvas({ gameState, animations, onHarvest, onRemovePest, onF
     }
   }, [animations, viewMode, onHarvest, onRemovePest, onFertilize, onDuckEaten, onDuckAttacked, onWaterToFish, onDogScared]);
 
-  // Kick off flip animation when flipX changes
+  // Kick off flip animation when rotation changes
   useEffect(() => {
-    const target = flipX ? -1 : 1;
+    const target = rotation;
     if (target !== flipAnimRef.current.to) {
       flipAnimRef.current = {
         from: flipFactorRef.current,
@@ -406,7 +565,7 @@ export function FarmCanvas({ gameState, animations, onHarvest, onRemovePest, onF
       cancelAnimationFrame(rafRef.current);
       rafRef.current = requestAnimationFrame(draw);
     }
-  }, [flipX, draw]);
+  }, [rotation, draw]);
 
   useEffect(() => {
     cancelAnimationFrame(rafRef.current);
@@ -468,9 +627,10 @@ export function FarmCanvas({ gameState, animations, onHarvest, onRemovePest, onF
 
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     e.preventDefault();
+    if (locked) return;
     onDragStart?.();
     getCurrentWindow().startDragging();
-  }, [onDragStart]);
+  }, [onDragStart, locked]);
 
   const dpr = window.devicePixelRatio || 1;
 

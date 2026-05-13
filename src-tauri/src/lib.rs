@@ -1,5 +1,7 @@
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+#[cfg(target_os = "macos")]
 use std::sync::Arc;
 use tauri::Emitter;
 use tauri::Manager;
@@ -7,17 +9,88 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 
+// =============================================================================
+// i18n for tray menu
+// =============================================================================
+
+#[derive(Clone, Copy, PartialEq)]
+enum Lang {
+    Zh,
+    En,
+}
+
+struct TrayLang(Mutex<Lang>);
+
+struct TrayLabels {
+    show_visible: &'static str,
+    show_hidden: &'static str,
+    pin_on: &'static str,
+    pin_off: &'static str,
+    view_farm: &'static str,
+    view_flat: &'static str,
+    view_heatmap: &'static str,
+    persp_left: &'static str,
+    persp_right: &'static str,
+    settings: &'static str,
+    stats: &'static str,
+    quit: &'static str,
+    lang_switch: &'static str,
+}
+
+const ZH_LABELS: TrayLabels = TrayLabels {
+    show_visible: "隐藏窗口",
+    show_hidden: "显示窗口",
+    pin_on: "取消置顶",
+    pin_off: "置顶窗口",
+    view_farm: "农场",
+    view_flat: "平面",
+    view_heatmap: "热力图",
+    persp_left: "左",
+    persp_right: "右",
+    settings: "设置",
+    stats: "统计",
+    quit: "退出",
+    lang_switch: "English",
+};
+
+const EN_LABELS: TrayLabels = TrayLabels {
+    show_visible: "Hide Window",
+    show_hidden: "Show Window",
+    pin_on: "Unpin from Top",
+    pin_off: "Pin to Top",
+    view_farm: "Farm",
+    view_flat: "Flat",
+    view_heatmap: "Heatmap",
+    persp_left: "Left",
+    persp_right: "Right",
+    settings: "Settings",
+    stats: "Stats",
+    quit: "Quit",
+    lang_switch: "中文",
+};
+
+fn get_labels(lang: Lang) -> &'static TrayLabels {
+    match lang {
+        Lang::Zh => &ZH_LABELS,
+        Lang::En => &EN_LABELS,
+    }
+}
+
 struct TrayMenuItems {
     show: MenuItem<tauri::Wry>,
     pin: MenuItem<tauri::Wry>,
     heatmap: MenuItem<tauri::Wry>,
     perspective: MenuItem<tauri::Wry>,
+    settings: MenuItem<tauri::Wry>,
+    stats: MenuItem<tauri::Wry>,
+    quit: MenuItem<tauri::Wry>,
+    lang: MenuItem<tauri::Wry>,
 }
 
 struct WindowVisible(AtomicBool);
 struct WindowPinned(AtomicBool);
-struct HeatmapState(AtomicBool);
-struct PerspectiveState(AtomicBool);
+struct ViewModeState(std::sync::atomic::AtomicU8);   // 0=farm, 1=flat, 2=heatmap
+struct PerspectiveIdx(std::sync::atomic::AtomicU8);  // 0=left, 1=right
 struct ListenerStarted(AtomicBool);
 
 #[derive(Clone, Serialize)]
@@ -436,6 +509,79 @@ fn start_listener(app: tauri::AppHandle) {
     }
 }
 
+#[tauri::command]
+fn set_toggle_shortcut(app: tauri::AppHandle, shortcut: String) {
+    let gs = app.global_shortcut();
+    // Unregister old custom shortcut
+    {
+        let old = app.state::<CustomToggleShortcut>();
+        let mut old_lock = old.0.lock().unwrap();
+        if let Some(ref old_str) = *old_lock {
+            if let Ok(s) = parse_shortcut_str(old_str) {
+                let _ = gs.unregister(s);
+            }
+        }
+        *old_lock = if shortcut.is_empty() { None } else { Some(shortcut.clone()) };
+    }
+
+    if shortcut.is_empty() {
+        return;
+    }
+
+    // Register new shortcut — it will be handled by the global with_handler
+    if let Ok(s) = parse_shortcut_str(&shortcut) {
+        let _ = gs.register(s);
+    }
+}
+
+struct CustomToggleShortcut(Mutex<Option<String>>);
+
+fn parse_shortcut_str(s: &str) -> Result<Shortcut, String> {
+    let parts: Vec<&str> = s.split('+').collect();
+    let mut mods = Modifiers::empty();
+    let mut code: Option<Code> = None;
+
+    for part in &parts {
+        match part.trim() {
+            "Ctrl" => mods |= Modifiers::CONTROL,
+            "Alt" => mods |= Modifiers::ALT,
+            "Shift" => mods |= Modifiers::SHIFT,
+            "Super" => mods |= Modifiers::SUPER,
+            key => {
+                code = match key {
+                    "A" => Some(Code::KeyA), "B" => Some(Code::KeyB), "C" => Some(Code::KeyC),
+                    "D" => Some(Code::KeyD), "E" => Some(Code::KeyE), "F" => Some(Code::KeyF),
+                    "G" => Some(Code::KeyG), "H" => Some(Code::KeyH), "I" => Some(Code::KeyI),
+                    "J" => Some(Code::KeyJ), "K" => Some(Code::KeyK), "L" => Some(Code::KeyL),
+                    "M" => Some(Code::KeyM), "N" => Some(Code::KeyN), "O" => Some(Code::KeyO),
+                    "P" => Some(Code::KeyP), "Q" => Some(Code::KeyQ), "R" => Some(Code::KeyR),
+                    "S" => Some(Code::KeyS), "T" => Some(Code::KeyT), "U" => Some(Code::KeyU),
+                    "V" => Some(Code::KeyV), "W" => Some(Code::KeyW), "X" => Some(Code::KeyX),
+                    "Y" => Some(Code::KeyY), "Z" => Some(Code::KeyZ),
+                    "0" => Some(Code::Digit0), "1" => Some(Code::Digit1), "2" => Some(Code::Digit2),
+                    "3" => Some(Code::Digit3), "4" => Some(Code::Digit4), "5" => Some(Code::Digit5),
+                    "6" => Some(Code::Digit6), "7" => Some(Code::Digit7), "8" => Some(Code::Digit8),
+                    "9" => Some(Code::Digit9),
+                    "F1" => Some(Code::F1), "F2" => Some(Code::F2), "F3" => Some(Code::F3),
+                    "F4" => Some(Code::F4), "F5" => Some(Code::F5), "F6" => Some(Code::F6),
+                    "F7" => Some(Code::F7), "F8" => Some(Code::F8), "F9" => Some(Code::F9),
+                    "F10" => Some(Code::F10), "F11" => Some(Code::F11), "F12" => Some(Code::F12),
+                    " " | "Space" => Some(Code::Space),
+                    "Enter" => Some(Code::Enter),
+                    "Escape" => Some(Code::Escape),
+                    "Tab" => Some(Code::Tab),
+                    _ => None,
+                };
+            }
+        }
+    }
+
+    match code {
+        Some(c) => Ok(Shortcut::new(if mods.is_empty() { None } else { Some(mods) }, c)),
+        None => Err("Invalid key".to_string()),
+    }
+}
+
 // =============================================================================
 
 fn start_keyboard_listener(app_handle: tauri::AppHandle) {
@@ -464,28 +610,63 @@ fn toggle_window(app: &tauri::AppHandle) {
 fn update_tray_menu_labels(app: &tauri::AppHandle) {
     let visible = app.state::<WindowVisible>().0.load(Ordering::SeqCst);
     let pinned = app.state::<WindowPinned>().0.load(Ordering::SeqCst);
+    let view_idx = app.state::<ViewModeState>().0.load(Ordering::Relaxed);
+    let persp_idx = app.state::<PerspectiveIdx>().0.load(Ordering::Relaxed);
+    let lang = *app.state::<TrayLang>().0.lock().unwrap();
+    let labels = get_labels(lang);
     let items = app.state::<TrayMenuItems>();
-    let _ = items.show.set_text(if visible { "Hide Window" } else { "Show Window" });
-    let _ = items.pin.set_text(if pinned { "Unpin from Top" } else { "Pin to Top" });
+    let _ = items.show.set_text(if visible { labels.show_visible } else { labels.show_hidden });
+    let _ = items.pin.set_text(if pinned { labels.pin_on } else { labels.pin_off });
+
+    // View mode with checkmark
+    let view_text = format!("{} {} / {} / {}",
+        if lang == Lang::Zh { "视图:" } else { "View:" },
+        if view_idx == 0 { format!("✓{}", labels.view_farm) } else { labels.view_farm.to_string() },
+        if view_idx == 1 { format!("✓{}", labels.view_flat) } else { labels.view_flat.to_string() },
+        if view_idx == 2 { format!("✓{}", labels.view_heatmap) } else { labels.view_heatmap.to_string() },
+    );
+    let _ = items.heatmap.set_text(&view_text);
+
+    // Perspective with checkmark
+    let persp_text = format!("{} {} / {}",
+        if lang == Lang::Zh { "视角:" } else { "Angle:" },
+        if persp_idx == 0 { format!("✓{}", labels.persp_left) } else { labels.persp_left.to_string() },
+        if persp_idx == 1 { format!("✓{}", labels.persp_right) } else { labels.persp_right.to_string() },
+    );
+    let _ = items.perspective.set_text(&persp_text);
+
+    let _ = items.settings.set_text(labels.settings);
+    let _ = items.stats.set_text(labels.stats);
+    let _ = items.quit.set_text(labels.quit);
+    let _ = items.lang.set_text(labels.lang_switch);
 }
 
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let show = MenuItem::with_id(app, "show", "Hide Window", true, None::<&str>)?;
-    let pin = MenuItem::with_id(app, "pin", "Unpin from Top", true, None::<&str>)?;
-    let heatmap = MenuItem::with_id(app, "heatmap", "Heatmap", true, None::<&str>)?;
-    let perspective = MenuItem::with_id(app, "perspective", "Perspective: Left", true, None::<&str>)?;
-    let stats = MenuItem::with_id(app, "stats", "Stats", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &pin, &heatmap, &perspective, &stats, &quit])?;
+    let lang = *app.state::<TrayLang>().0.lock().unwrap();
+    let labels = get_labels(lang);
+
+    let show = MenuItem::with_id(app, "show", labels.show_visible, true, None::<&str>)?;
+    let pin = MenuItem::with_id(app, "pin", labels.pin_on, true, None::<&str>)?;
+    let heatmap = MenuItem::with_id(app, "heatmap", "View", true, None::<&str>)?;
+    let perspective = MenuItem::with_id(app, "perspective", "Angle", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", labels.settings, true, None::<&str>)?;
+    let stats = MenuItem::with_id(app, "stats", labels.stats, true, None::<&str>)?;
+    let lang_item = MenuItem::with_id(app, "lang", labels.lang_switch, true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", labels.quit, true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &pin, &heatmap, &perspective, &settings, &stats, &lang_item, &quit])?;
 
     app.manage(TrayMenuItems {
         show: show.clone(),
         pin: pin.clone(),
         heatmap: heatmap.clone(),
         perspective: perspective.clone(),
+        settings: settings.clone(),
+        stats: stats.clone(),
+        quit: quit.clone(),
+        lang: lang_item.clone(),
     });
-    app.manage(HeatmapState(AtomicBool::new(false)));
-    app.manage(PerspectiveState(AtomicBool::new(false)));
+    app.manage(ViewModeState(std::sync::atomic::AtomicU8::new(0)));   // 0=farm
+    app.manage(PerspectiveIdx(std::sync::atomic::AtomicU8::new(0)));  // 0=left
 
     TrayIconBuilder::new()
         .icon(tauri::include_image!("icons/tray-icon.png"))
@@ -505,18 +686,20 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     update_tray_menu_labels(app);
                 }
                 "heatmap" => {
-                    let state = app.state::<HeatmapState>();
-                    let was_on = state.0.fetch_xor(true, Ordering::Relaxed);
-                    let items = app.state::<TrayMenuItems>();
-                    let _ = items.heatmap.set_text(if was_on { "Heatmap" } else { "Heatmap \u{2705}" });
+                    let state = app.state::<ViewModeState>();
+                    let cur = state.0.load(Ordering::Relaxed);
+                    let next = (cur + 1) % 3; // farm(0) → flat(1) → heatmap(2)
+                    state.0.store(next, Ordering::Relaxed);
                     let _ = app.emit("toggle-heatmap", ());
+                    update_tray_menu_labels(app);
                 }
                 "perspective" => {
-                    let state = app.state::<PerspectiveState>();
-                    let was_on = state.0.fetch_xor(true, Ordering::Relaxed);
-                    let items = app.state::<TrayMenuItems>();
-                    let _ = items.perspective.set_text(if was_on { "Perspective: Left" } else { "Perspective: Right" });
+                    let state = app.state::<PerspectiveIdx>();
+                    let cur = state.0.load(Ordering::Relaxed);
+                    let next = (cur + 1) % 2; // left(0) → right(1)
+                    state.0.store(next, Ordering::Relaxed);
                     let _ = app.emit("toggle-perspective", ());
+                    update_tray_menu_labels(app);
                 }
                 "stats" => {
                     let visible = app.state::<WindowVisible>();
@@ -526,9 +709,42 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
-                        update_tray_menu_labels(app);
                     }
                     let _ = app.emit("toggle-stats", ());
+                    update_tray_menu_labels(app);
+                }
+                "settings" => {
+                    let visible = app.state::<WindowVisible>();
+                    if !visible.0.load(Ordering::SeqCst) {
+                        visible.0.store(true, Ordering::SeqCst);
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    let _ = app.emit("open-settings", ());
+                    update_tray_menu_labels(app);
+                }
+                "lang" => {
+                    {
+                        let tray_lang = app.state::<TrayLang>();
+                        let mut current = tray_lang.0.lock().unwrap();
+                        *current = match *current {
+                            Lang::Zh => Lang::En,
+                            Lang::En => Lang::Zh,
+                        };
+                    }
+                    // Persist language to store
+                    let lang = *app.state::<TrayLang>().0.lock().unwrap();
+                    let lang_str = match lang {
+                        Lang::Zh => "zh",
+                        Lang::En => "en",
+                    };
+                    // Emit to frontend so it can sync
+                    let _ = app.emit("set-language", lang_str);
+                    // Save to store file
+                    save_lang_to_store(app, lang_str);
+                    update_tray_menu_labels(app);
                 }
                 "quit" => app.exit(0),
                 _ => {}
@@ -550,6 +766,39 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn save_lang_to_store(app: &tauri::AppHandle, lang_str: &str) {
+    // Write language to the store.json file used by the frontend
+    if let Ok(app_dir) = app.path().app_data_dir() {
+        let store_path = app_dir.join("store.json");
+        let mut data: serde_json::Map<String, serde_json::Value> = if let Ok(content) = std::fs::read_to_string(&store_path) {
+            serde_json::from_str(&content).unwrap_or_default()
+        } else {
+            serde_json::Map::new()
+        };
+        data.insert("language".to_string(), serde_json::Value::String(lang_str.to_string()));
+        if let Ok(json) = serde_json::to_string_pretty(&data) {
+            let _ = std::fs::write(&store_path, json);
+        }
+    }
+}
+
+fn load_lang_from_store(app: &tauri::App) -> Lang {
+    if let Ok(app_dir) = app.path().app_data_dir() {
+        let store_path = app_dir.join("store.json");
+        if let Ok(content) = std::fs::read_to_string(&store_path) {
+            if let Ok(data) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&content) {
+                if let Some(serde_json::Value::String(lang_str)) = data.get("language") {
+                    return match lang_str.as_str() {
+                        "en" => Lang::En,
+                        _ => Lang::Zh,
+                    };
+                }
+            }
+        }
+    }
+    Lang::Zh // default to Chinese
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -568,16 +817,47 @@ pub fn run() {
             check_accessibility,
             request_accessibility,
             start_listener,
+            set_toggle_shortcut,
         ])
         .setup(|app| {
             app.manage(ListenerStarted(AtomicBool::new(false)));
             app.manage(WindowVisible(AtomicBool::new(true)));
             app.manage(WindowPinned(AtomicBool::new(true)));
+            app.manage(CustomToggleShortcut(Mutex::new(None)));
+
+            // Load language preference from store (defaults to Chinese)
+            let lang = load_lang_from_store(app);
+            app.manage(TrayLang(Mutex::new(lang)));
+
             setup_tray(app)?;
+            update_tray_menu_labels(app.handle());
+
+            // Load and register saved toggle window shortcut
+            if let Ok(app_dir) = app.path().app_data_dir() {
+                let store_path = app_dir.join("store.json");
+                if let Ok(content) = std::fs::read_to_string(&store_path) {
+                    if let Ok(data) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&content) {
+                        if let Some(serde_json::Value::Array(keys)) = data.get("shortcut_toggle_window") {
+                            let parts: Vec<String> = keys.iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                .collect();
+                            if !parts.is_empty() {
+                                let shortcut_str = parts.join("+");
+                                if let Ok(s) = parse_shortcut_str(&shortcut_str) {
+                                    let _ = app.global_shortcut().register(s);
+                                    let custom = app.state::<CustomToggleShortcut>();
+                                    *custom.0.lock().unwrap() = Some(shortcut_str);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             // Workaround: transparent windows can disappear when dragged to a
             // display with a different backing scale factor (macOS WebKit bug).
             // A debounced 1px resize after move forces a redraw.
+            #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
                 let w = window.clone();
                 let pending = Arc::new(AtomicBool::new(false));
