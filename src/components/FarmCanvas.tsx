@@ -230,7 +230,6 @@ export function FarmCanvas({ gameState, animations, onHarvest, onRemovePest, onF
       const keyUnit = TILE_W * 0.7; // width of a 1u key
       const keyH = TILE_H * 1.4;    // height of each key row
       const gap = 2;
-      const flatPadding = PADDING;
       const totalCols = HHKB_ROWS.reduce((max, row) => {
         const rowCols = row.reduce((sum, k) => sum + k.width, 0);
         return Math.max(max, rowCols);
