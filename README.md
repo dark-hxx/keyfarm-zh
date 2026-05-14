@@ -10,7 +10,7 @@ KeyFarm 是一款桌面应用，将你的日常打字变成一个小型农场游
 
 ## 下载
 
-前往 [Releases](https://github.com/t42ji2ji/keyfarm/releases) 页面，下载适合你平台的最新版本：
+前往 [Releases](https://github.com/dark-hxx/keyfarm-zh/releases) 页面，下载适合你平台的最新版本：
 
 - **macOS** — `KeyFarm_x.x.x_universal.dmg`
 - **Windows** — `KeyFarm_x.x.x_x64-setup.exe`
