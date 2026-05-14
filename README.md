@@ -70,3 +70,6 @@ npm run tauri dev
 ```
 
 需要 [Node.js](https://nodejs.org/) 22+ 和 [Rust](https://rustup.rs/)。
+
+## 友情链接
+[LINUX DO - 新的理想型社区](https://linux.do/)

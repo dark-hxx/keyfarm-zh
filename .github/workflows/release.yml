@@ -48,7 +48,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: "v__VERSION__"
-          releaseName: "KeyFarm v__VERSION__"
+          releaseName: "KeyFarm-zh v__VERSION__"
           releaseBody: |
             ## 下载安装
 
